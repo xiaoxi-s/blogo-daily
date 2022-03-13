@@ -16,7 +16,7 @@ import (
 	"github.com/streadway/amqp"
 )
 
-var newsRefreshInterval = 1 * time.Minute
+var newsRefreshInterval = 1 * time.Second
 var lastUpdatedTime time.Time
 var channelAmqp *amqp.Channel
 
@@ -25,6 +25,7 @@ func init() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	lastUpdatedTime = time.Now()
 	channelAmqp, _ = amqpConnection.Channel()
 }
 
@@ -81,7 +82,7 @@ func ParseHandler(c *gin.Context) {
 		c.JSON(http.StatusNotModified, gin.H{"message": "do not update daily"})
 		return
 	}
-	var request http.Request
+	var request models.RssFeedRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": err.Error()})
