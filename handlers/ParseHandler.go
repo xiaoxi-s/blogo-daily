@@ -2,29 +2,30 @@ package handlers
 
 import (
 	"blogoproducer/models"
-	"context"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"github.com/streadway/amqp"
 )
 
-var client *mongo.Client
-var ctx context.Context
-var newsRefreshInterval = 1 * time.Hour
+var newsRefreshInterval = 1 * time.Minute
 var lastUpdatedTime time.Time
+var channelAmqp *amqp.Channel
 
 func init() {
-	ctx = context.Background()
-	client, _ = mongo.Connect(ctx, options.Client().ApplyURI(os.Getenv("MONGO_URI")))
+	amqpConnection, err := amqp.Dial(os.Getenv("RABBITMQ_URI"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	channelAmqp, _ = amqpConnection.Channel()
 }
 
 func Dispatch(url string) int {
@@ -52,9 +53,6 @@ func GetFeedFromGoogleNews(url string) ([]models.Entry, error) {
 	if err != nil {
 		return nil, err
 	}
-	fmt.Print("rsstag: ", googleNewsFeed.XMLName)
-	fmt.Println("channel: ", googleNewsFeed.Items[0])
-	fmt.Println("Size of News entires: ", len(googleNewsFeed.Items))
 
 	newsEntries := make([]models.Entry, len(googleNewsFeed.Items))
 	for ind, googleNewsEntry := range googleNewsFeed.Items {
@@ -79,50 +77,23 @@ func GetFeedEntries(url string) ([]models.Entry, error) {
 }
 
 func ParseHandler(c *gin.Context) {
-
-	collection := client.Database(os.Getenv("MONGO_DATABASE")).Collection("news")
 	if time.Now().Before(lastUpdatedTime.Add(newsRefreshInterval)) {
-		cur, err := collection.Find(ctx, nil)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		entries := make([]models.Entry, 0)
-		var entry models.Entry
-		for cur.Next(ctx) {
-			cur.Decode(&entry)
-			entries = append(entries, entry)
-		}
-		c.JSON(http.StatusOK, entries)
+		c.JSON(http.StatusNotModified, gin.H{"message": "do not update daily"})
+		return
 	}
-
-	var request models.RssFeedRequest
+	var request http.Request
 	if err := c.ShouldBindJSON(&request); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": err.Error()})
 		return
 	}
-	entries, err := GetFeedEntries(request.Url)
-	var maxNumOfNews int
-
-	if len(entries) > 5 {
-		maxNumOfNews = 5
-	} else {
-		maxNumOfNews = len(entries)
-	}
-
-	for _, entry := range entries[0:maxNumOfNews] {
-		collection.InsertOne(ctx, bson.M{
-			"title":       entry.Title,
-			"description": entry.Description,
-			"link":        entry.Link,
-		})
-	}
-
+	data, _ := json.Marshal(request)
+	err := channelAmqp.Publish("", os.Getenv("RABBITMQ_QUEUE"), false, false, amqp.Publishing{ContentType: "application/json", Body: []byte(data)})
 	if err != nil {
+		fmt.Println(err)
 		c.JSON(http.StatusInternalServerError,
-			gin.H{"error": "Error while parsing the rss feed"})
+			gin.H{"error": "Error while publishing to RabbitMQ"})
 		return
 	}
-	c.JSON(http.StatusOK, entries)
+	c.JSON(http.StatusOK, map[string]string{"message": "success"})
 }
