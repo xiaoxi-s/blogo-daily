@@ -13,7 +13,7 @@ import (
 	"github.com/streadway/amqp"
 )
 
-var newsRefreshInterval = 1 * time.Minute
+var newsRefreshInterval = 1 * time.Second
 var lastUpdatedTime time.Time
 var channelAmqp *amqp.Channel
 
